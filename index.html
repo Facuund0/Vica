@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ViCa · Cooperativa de Vivienda</title>
+  <meta name="description" content="ViCa Cooperativa de Vivienda Limitada — Construir juntos, vivir mejor. Sunchales, Santa Fe." />
+  <link rel="icon" href="img/logo-icono.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+  <link rel="stylesheet" href="mascota/mascota.css" />
+</head>
+<body>
+  <!-- Pantalla de bienvenida -->
+  <div class="splash" id="splash">
+    <div class="splash-card">
+      <img src="img/logo.png" alt="ViCa Cooperativa de Vivienda" class="splash-logo" />
+      <h1>Bienvenida, bienvenido a ViCa</h1>
+      <p>La plataforma de la cooperativa para seguir tu vivienda, pagar tus cuotas, participar y estar al tanto de todo.</p>
+      <button class="btn btn-primario btn-grande" id="btn-ingresar" type="button">Ingresar</button>
+      <p class="splash-nota">Demostración: ingresás como la asociada <strong>Marina Pereyra</strong>. Datos ilustrativos de un proyecto académico.</p>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <button class="btn-menu" id="btn-menu" type="button" aria-label="Abrir menú">☰</button>
+    <a href="#inicio" class="marca">
+      <img src="img/logo-icono.png" alt="" />
+      <span><strong>ViCa</strong><small>Cooperativa de Vivienda</small></span>
+    </a>
+    <div class="topbar-acciones">
+      <button class="btn-letra" id="btn-letra" type="button" title="Agrandar o achicar la letra" aria-pressed="false">A<span>A</span></button>
+      <a href="#cuenta" class="usuario-chip" title="Mi cuenta">
+        <span class="avatar">MP</span>
+        <span class="usuario-datos"><strong>Marina Pereyra</strong><small>Asociada N° 0042</small></span>
+      </a>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar" aria-label="Navegación">
+      <nav id="nav"></nav>
+      <div class="sidebar-pie">
+        <p>¿Dudas? Preguntale a <strong>Rufino</strong>, el hornero de ViCa, abajo a la derecha.</p>
+      </div>
+    </aside>
+    <div class="sidebar-fondo" id="sidebar-fondo"></div>
+
+    <main class="contenido" id="contenido" tabindex="-1"></main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="modal" id="modal" hidden>
+    <div class="modal-caja" role="dialog" aria-modal="true">
+      <button class="modal-cerrar" type="button" aria-label="Cerrar">✕</button>
+      <div class="modal-cuerpo"></div>
+    </div>
+  </div>
+
+  <script src="js/datos.js" defer></script>
+  <script src="js/app.js" defer></script>
+  <script src="mascota/conocimiento.js" defer></script>
+  <script src="mascota/guion.js" defer></script>
+  <script src="mascota/mascota.js" defer></script>
+</body>
+</html>
