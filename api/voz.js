@@ -4,7 +4,7 @@
 //  disponible), la app usa automáticamente la voz del navegador.
 //  Opcional: GEMINI_TTS_MODEL y GEMINI_VOZ (por defecto "Achird", amigable)
 // =============================================================
-const MODELOS = [process.env.GEMINI_TTS_MODEL, "gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts"].filter(Boolean);
+const MODELOS = [process.env.GEMINI_TTS_MODEL, "gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview"].filter(Boolean);
 const VOZ = process.env.GEMINI_VOZ || "Achird";
 const PERMITIDAS = ["Achird", "Sulafat", "Algieba", "Vindemiatrix", "Charon", "Puck", "Orus", "Kore", "Aoede", "Zephyr"];
 const ESTILO = "Decí el siguiente texto como lo diría una persona real de Sunchales, Argentina, charlando con un vecino: acento rioplatense, tono cálido y cercano pero respetuoso, ritmo natural, con pausas y entonación expresiva. Que no suene a locutor ni a contestador automático. Texto:";
