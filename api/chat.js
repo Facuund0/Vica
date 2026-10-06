@@ -7,7 +7,7 @@ import "../js/datos.js"; // define globalThis.VICA
 import "../mascota/conocimiento.js"; // define globalThis.CONOCIMIENTO
 
 const K = globalThis.CONOCIMIENTO;
-const MODELOS = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-flash-lite"].filter(Boolean);
+const MODELOS = [process.env.GEMINI_MODEL, "gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"].filter(Boolean);
 const IDS_SECCIONES = K.secciones.map((s) => s.id);
 const IDS_ELEMENTOS = K.elementos.map((e) => e.id);
 
