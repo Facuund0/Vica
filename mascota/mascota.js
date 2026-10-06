@@ -436,10 +436,13 @@
       let r = null;
       if (!esSugerencia && HAY_SERVIDOR) r = await this.preguntarGemini(texto, ctx);
       if (!r) r = responderGuion(texto, ctx);
+      const sinIA = this.falloIA && !esSugerencia;
+      this.falloIA = false;
 
       escribiendo.remove();
       this.estado("pensando", false);
       this.agregarMensaje("bot", r.respuesta);
+      if (sinIA) this.agregarMensaje("aviso", "Respuesta sin IA: no se pudo conectar con Gemini. Abrí /api/chat en el navegador para ver el diagnóstico.");
       this.historial.push({ rol: "user", texto }, { rol: "model", texto: r.respuesta });
       this.historial = this.historial.slice(-10);
 
@@ -472,11 +475,12 @@
           body: JSON.stringify({ mensaje: texto, historial: this.historial, contexto }),
           signal: ctrl.signal,
         });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const d = await res.json();
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) { console.warn("[Rufino] Gemini falló:", res.status, d.errores || d.error); throw new Error("HTTP " + res.status); }
         return d.respuesta ? d : null;
       } catch (e) {
         console.info("[Rufino] Gemini no disponible, uso el guion:", e.message);
+        this.falloIA = true;
         return null;
       } finally { clearTimeout(t); }
     }

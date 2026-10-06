@@ -24,8 +24,8 @@ CÓMO RESPONDER
 - Recordá que es una demostración de un proyecto académico si preguntan por cobros, votos o envíos reales.
 
 NAVEGACIÓN
-- "destino": id de la pantalla a la que conviene llevar a la usuaria si la pregunta se responde mejor ahí o si pide ir a algún lado. Vacío si no hace falta moverse (por ejemplo, charla o preguntas generales).
-- "elemento": id de un elemento concreto para señalar, solo si aplica. Vacío si no.
+- "destino": id de la pantalla a la que conviene llevar a la usuaria si la pregunta se responde mejor ahí o si pide ir a algún lado. "ninguno" si no hace falta moverse (por ejemplo, charla o preguntas generales).
+- "elemento": id de un elemento concreto para señalar, solo si aplica. "ninguno" si no.
 - "sugerencias": 2 o 3 preguntas cortas (máximo 6 palabras) que la usuaria podría hacer después, relacionadas con lo que preguntó.
 
 PANTALLAS (id: contenido)
@@ -41,20 +41,81 @@ DATOS
 ${K.datos}
 `.trim();
 
+// "ninguno" en vez de "" porque algunos modelos rechazan enums vacíos
 const ESQUEMA = {
   type: "OBJECT",
   properties: {
     respuesta: { type: "STRING" },
-    destino: { type: "STRING", enum: ["", ...IDS_SECCIONES] },
-    elemento: { type: "STRING", enum: ["", ...IDS_ELEMENTOS] },
+    destino: { type: "STRING", enum: ["ninguno", ...IDS_SECCIONES] },
+    elemento: { type: "STRING", enum: ["ninguno", ...IDS_ELEMENTOS] },
     sugerencias: { type: "ARRAY", items: { type: "STRING" } },
   },
   required: ["respuesta", "destino", "elemento", "sugerencias"],
 };
 
+async function llamarGemini(modelo, key, contents, conEsquema) {
+  const generationConfig = {
+    temperature: 0.5,
+    // los modelos "pensantes" gastan tokens pensando: dejamos margen de sobra
+    maxOutputTokens: 2048,
+    responseMimeType: "application/json",
+  };
+  if (conEsquema) generationConfig.responseSchema = ESQUEMA;
+  if (/2\.5/.test(modelo)) generationConfig.thinkingConfig = { thinkingBudget: 0 }; // respuestas rápidas
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({ systemInstruction: { parts: [{ text: INSTRUCCIONES }] }, contents, generationConfig }),
+  });
+  if (!r.ok) {
+    const detalle = (await r.text()).replace(key, "***").slice(0, 400);
+    return { ok: false, status: r.status, detalle };
+  }
+  const data = await r.json();
+  const texto = data?.candidates?.[0]?.content?.parts?.filter((p) => !p.thought).map((p) => p.text || "").join("") || "";
+  const s = parse(texto.replace(/^```(json)?|```$/g, "").trim()) || (texto.trim() ? { respuesta: texto.trim() } : null);
+  if (!s || !String(s.respuesta || "").trim()) {
+    return { ok: false, status: 204, detalle: "Respuesta vacía (" + (data?.candidates?.[0]?.finishReason || "sin motivo") + ")" };
+  }
+  return { ok: true, s };
+}
+
+// Prueba los modelos en orden; si uno falla, pasa al siguiente
+async function responder(key, contents) {
+  const errores = [];
+  for (const modelo of MODELOS) {
+    for (const conEsquema of [true, false]) {
+      try {
+        const r = await llamarGemini(modelo, key, contents, conEsquema);
+        if (r.ok) return { ok: true, modelo, s: r.s };
+        errores.push({ modelo, conEsquema, status: r.status, detalle: r.detalle });
+        console.error(`Gemini ${modelo} (esquema ${conEsquema}) → ${r.status}`, r.detalle);
+        if (r.status === 400 && conEsquema) continue; // reintenta sin esquema
+        if ([400, 401, 403].includes(r.status) && /API key|API_KEY|permission/i.test(r.detalle)) return { ok: false, errores }; // key mala: no tiene sentido seguir
+        break; // siguiente modelo
+      } catch (e) {
+        errores.push({ modelo, status: 0, detalle: String(e).slice(0, 200) });
+        break;
+      }
+    }
+  }
+  return { ok: false, errores };
+}
+
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
   const key = process.env.GEMINI_API_KEY;
+
+  // Diagnóstico: abrí /api/chat en el navegador para ver si Gemini responde
+  if (req.method === "GET") {
+    if (!key) return res.status(200).json({ estado: "ERROR", problema: "Falta la variable GEMINI_API_KEY en Vercel (o se agregó y falta hacer Redeploy)." });
+    const r = await responder(key, [{ role: "user", parts: [{ text: "¿Cuánto es 2 + 2?" }] }]);
+    return res.status(200).json(
+      r.ok
+        ? { estado: "OK", modelo: r.modelo, prueba: "¿Cuánto es 2 + 2?", respuesta: r.s.respuesta }
+        : { estado: "ERROR", problema: "Gemini rechazó todos los intentos", errores: r.errores }
+    );
+  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
   if (!key) return res.status(503).json({ error: "Falta GEMINI_API_KEY en el servidor" });
 
   const body = typeof req.body === "string" ? parse(req.body) || {} : req.body || {};
@@ -69,43 +130,22 @@ export default async function handler(req, res) {
       .map((t) => ({ role: t.rol, parts: [{ text: String(t.texto).slice(0, 600) }] })),
     { role: "user", parts: [{ text: `[CONTEXTO ACTUAL DE LA APP: ${contexto}]\n${mensaje}` }] },
   ];
+  // Gemini exige que la conversación empiece con el usuario
+  while (contents.length && contents[0].role !== "user") contents.shift();
 
-  const pedido = {
-    systemInstruction: { parts: [{ text: INSTRUCCIONES }] },
-    contents,
-    generationConfig: { temperature: 0.5, maxOutputTokens: 600, responseMimeType: "application/json", responseSchema: ESQUEMA },
-  };
-
-  // Prueba los modelos en orden: si uno no existe o se quedó sin cuota gratis, pasa al siguiente
-  let ultimoError = 502;
-  for (const modelo of MODELOS) {
-    try {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify(pedido),
-      });
-      if (!r.ok) {
-        ultimoError = r.status;
-        console.error(`Gemini ${modelo} → ${r.status}`, (await r.text()).slice(0, 300));
-        if ([404, 429, 500, 503].includes(r.status)) continue;
-        break;
-      }
-      const data = await r.json();
-      const texto = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
-      const s = parse(texto) || { respuesta: texto };
-      return res.status(200).json({
-        respuesta: String(s.respuesta || "").trim() || K.respuestaPorDefecto,
-        destino: IDS_SECCIONES.includes(s.destino) ? s.destino : "",
-        elemento: IDS_ELEMENTOS.includes(s.elemento) ? s.elemento : "",
-        sugerencias: Array.isArray(s.sugerencias) ? s.sugerencias.slice(0, 3).map((x) => String(x).slice(0, 60)) : [],
-        modelo,
-      });
-    } catch (e) {
-      console.error(modelo, e);
-    }
+  const r = await responder(key, contents);
+  if (!r.ok) {
+    const ultimo = r.errores.at(-1)?.status;
+    return res.status(ultimo === 429 ? 429 : 502).json({ error: "Gemini no respondió", errores: r.errores });
   }
-  return res.status(ultimoError === 429 ? 429 : 502).json({ error: "Gemini no respondió" });
+  const s = r.s;
+  return res.status(200).json({
+    respuesta: String(s.respuesta).trim(),
+    destino: IDS_SECCIONES.includes(s.destino) ? s.destino : "",
+    elemento: IDS_ELEMENTOS.includes(s.elemento) ? s.elemento : "",
+    sugerencias: Array.isArray(s.sugerencias) ? s.sugerencias.slice(0, 3).map((x) => String(x).slice(0, 60)) : [],
+    modelo: r.modelo,
+  });
 }
 
 function parse(s) {

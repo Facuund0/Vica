@@ -213,6 +213,7 @@
 .r-msg { max-width: 86%; padding: 10px 14px; border-radius: 16px; font-size: .9rem; line-height: 1.45; white-space: pre-wrap; animation: r-aparecer .2s ease; }
 .r-bot { align-self: flex-start; background: #fff; border: 1px solid #dce8df; border-bottom-left-radius: 5px; }
 .r-user { align-self: flex-end; background: #4d9d28; color: #fff; border-bottom-right-radius: 5px; }
+.r-aviso { align-self: center; max-width: 95%; font-size: .72rem; color: #8a6d1f; background: #fdf4e3; border-radius: 10px; padding: 6px 10px; text-align: center; }
 .r-escribiendo { color: #5f6e74; letter-spacing: 3px; animation: r-titilar 1s ease-in-out infinite; }
 @keyframes r-titilar { 50% { opacity: .35; } }
 
