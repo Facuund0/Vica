@@ -6,6 +6,8 @@
 // =============================================================
 const MODELOS = [process.env.GEMINI_TTS_MODEL, "gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts"].filter(Boolean);
 const VOZ = process.env.GEMINI_VOZ || "Achird";
+const PERMITIDAS = ["Achird", "Sulafat", "Algieba", "Vindemiatrix", "Charon", "Puck", "Orus", "Kore", "Aoede", "Zephyr"];
+const ESTILO = "Decí el siguiente texto como lo diría una persona real de Sunchales, Argentina, charlando con un vecino: acento rioplatense, tono cálido y cercano pero respetuoso, ritmo natural, con pausas y entonación expresiva. Que no suene a locutor ni a contestador automático. Texto:";
 
 export default async function handler(req, res) {
   const key = process.env.GEMINI_API_KEY;
@@ -15,8 +17,10 @@ export default async function handler(req, res) {
     const pruebas = await Promise.all(MODELOS.map(async (modelo) => {
       const t0 = Date.now();
       try {
-        const r = await pedirAudio(modelo, key, "Hola");
-        return { modelo, ok: r.ok, status: r.status, ms: Date.now() - t0, detalle: r.ok ? "audio OK" : r.detalle };
+        const r = await pedirAudio(modelo, key, "Hola, ¿cómo estás?");
+        // duración del audio: si es muy larga, el modelo está leyendo también las indicaciones
+        const seg = r.ok ? +((r.audio.length - 44) / 48000).toFixed(1) : 0;
+        return { modelo, ok: r.ok, status: r.status, ms: Date.now() - t0, segundos: seg, detalle: r.ok ? "audio OK" : r.detalle };
       } catch (e) { return { modelo, ok: false, ms: Date.now() - t0, detalle: String(e).slice(0, 200) }; }
     }));
     return res.status(200).json({ estado: pruebas.some((p) => p.ok) ? "OK" : "ERROR", voz: VOZ, pruebas });
@@ -30,7 +34,7 @@ export default async function handler(req, res) {
 
   for (const modelo of MODELOS) {
     try {
-      const r = await pedirAudio(modelo, key, texto);
+      const r = await pedirAudio(modelo, key, texto, PERMITIDAS.includes(body?.voz) ? body.voz : VOZ);
       if (!r.ok) { console.error(`TTS ${modelo} → ${r.status}`, r.detalle); continue; }
       res.setHeader("Content-Type", "audio/wav");
       res.setHeader("Cache-Control", "public, max-age=86400");
@@ -42,7 +46,7 @@ export default async function handler(req, res) {
   return res.status(502).json({ error: "TTS no disponible" });
 }
 
-async function pedirAudio(modelo, key, texto) {
+async function pedirAudio(modelo, key, texto, voz = VOZ) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 12000);
   try {
@@ -51,8 +55,8 @@ async function pedirAudio(modelo, key, texto) {
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       signal: ctrl.signal,
       body: JSON.stringify({
-        contents: [{ parts: [{ text: `Leé en voz alta, en español rioplatense de Argentina, con tono cálido, sereno y profesional, a ritmo natural y sin exagerar: ${texto}` }] }],
-        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOZ } } } },
+        contents: [{ parts: [{ text: `${ESTILO} ${texto}` }] }],
+        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voz } } } },
       }),
     });
     if (!r.ok) return { ok: false, status: r.status, detalle: (await r.text()).replace(key, "***").slice(0, 300) };

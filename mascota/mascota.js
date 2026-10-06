@@ -76,15 +76,38 @@
       .trim();
   }
 
+  // Voces de Gemini (las de "estilo" suenan más humanas que la del navegador)
+  const VOCES = [
+    { id: "Achird", nombre: "Achird · amigable" },
+    { id: "Sulafat", nombre: "Sulafat · cálida" },
+    { id: "Algieba", nombre: "Algieba · suave" },
+    { id: "Vindemiatrix", nombre: "Vindemiatrix · amable" },
+    { id: "Charon", nombre: "Charon · informativa" },
+    { id: "Puck", nombre: "Puck · alegre" },
+    { id: "Orus", nombre: "Orus · firme" },
+    { id: "navegador", nombre: "Voz del navegador" },
+  ];
+  const leerPref = (k, def) => { try { return localStorage.getItem(k) || def; } catch { return def; } };
+  const guardarPref = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
   class Voz {
     constructor(alHablar) {
       this.alHablar = alHablar; // (nivel 0..1) para mover el pico
-      this.natural = HAY_SERVIDOR;
+      this.vozElegida = leerPref("rufino-voz", "Achird");
+      this.natural = HAY_SERVIDOR && this.vozElegida !== "navegador";
+      this.fallos = 0;
       this.cache = new Map();
       this.audio = new Audio();
       this.token = 0;
       this.elegirVoz();
       if ("speechSynthesis" in window) speechSynthesis.addEventListener?.("voiceschanged", () => this.elegirVoz());
+    }
+
+    cambiarVoz(id) {
+      this.vozElegida = id;
+      guardarPref("rufino-voz", id);
+      this.natural = HAY_SERVIDOR && id !== "navegador";
+      this.fallos = 0;
     }
 
     elegirVoz() {
@@ -122,16 +145,18 @@
 
     async hablarNatural(texto, mi) {
       try {
-        let url = this.cache.get(texto);
+        const clave = this.vozElegida + "|" + texto;
+        let url = this.cache.get(clave);
         if (!url) {
           const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 9000);
-          const r = await fetch(API_VOZ, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ texto }), signal: ctrl.signal });
+          const t = setTimeout(() => ctrl.abort(), 15000);
+          const r = await fetch(API_VOZ, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ texto, voz: this.vozElegida }), signal: ctrl.signal });
           clearTimeout(t);
-          if (!r.ok) throw new Error("HTTP " + r.status);
+          if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
           url = URL.createObjectURL(await r.blob());
-          this.cache.set(texto, url);
+          this.cache.set(clave, url);
         }
+        this.fallos = 0;
         if (mi !== this.token) return true;
         this.prepararAnalizador();
         this.audio.src = url;
@@ -141,8 +166,9 @@
         this.alHablar(0);
         return true;
       } catch (e) {
-        console.info("[Rufino] Voz natural no disponible, uso la del navegador:", e.message);
-        this.natural = false; // no reintenta en esta visita
+        console.info("[Rufino] Voz natural no disponible esta vez, uso la del navegador:", e.message);
+        // si el servidor dice que no está configurada, o falla dos veces seguidas, deja de intentar
+        if (e.status === 503 || ++this.fallos >= 2) this.natural = false;
         return false;
       }
     }
@@ -201,6 +227,230 @@
     }
   }
 
+
+  // ---------------------------------------------------------------
+  //  Motor de animación cuadro a cuadro (60 fps) con resortes.
+  //  Cada parte del hornero tiene inercia propia: así la cola y la
+  //  cabeza "siguen" al cuerpo y todo se mueve como un dibujo animado.
+  // ---------------------------------------------------------------
+  class Resorte {
+    constructor(valor = 0, rigidez = 170, amort = 18) { this.v = valor; this.vel = 0; this.obj = valor; this.k = rigidez; this.c = amort; }
+    paso(dt) {
+      const a = this.k * (this.obj - this.v) - this.c * this.vel;
+      this.vel += a * dt;
+      this.v += this.vel * dt;
+      return this.v;
+    }
+    empujar(impulso) { this.vel += impulso; }
+  }
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const limitar = (v, a, b) => Math.max(a, Math.min(b, v));
+  const suave = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2); // ease in-out cúbico
+
+  class Animador {
+    constructor(r) {
+      this.r = r;
+      const svg = $(".r-svg", r.root);
+      const q = (c) => $(c, svg);
+      this.el = {
+        svg, arco: $(".r-arco", r.root), todo: q(".r-cuerpo-todo"), cabeza: q(".r-cabeza"), ala: q(".r-ala"), cola: q(".r-cola"),
+        pataA: q(".r-pata-a"), pataB: q(".r-pata-b"), picoInf: q(".r-pico-inf"), parpado: q(".r-parpado"),
+        pupila: q(".r-pupila"), brillo: q(".r-brillo"), sombra: q(".r-sombra"), ojoBlanco: q(".r-ojo-blanco"),
+      };
+      // resortes de cada parte
+      this.mirada = new Resorte(1, 260, 22);        // 1 = mira a la derecha, -1 = izquierda (pasa por 0 al girar)
+      this.cabeza = new Resorte(0, 140, 11);
+      this.cabezaX = new Resorte(0, 160, 14);
+      this.cabezaY = new Resorte(0, 160, 14);
+      this.cola = new Resorte(0, 90, 5);            // poco amortiguada: se bambolea
+      this.ala = new Resorte(0, 320, 20);
+      this.squash = new Resorte(1, 260, 13);        // aplastar/estirar
+      this.inclinacion = new Resorte(0, 120, 16);   // inclinación en vuelo
+      this.pico = new Resorte(0, 700, 32);
+      this.pupX = new Resorte(0, 220, 20);
+      this.pupY = new Resorte(0, 220, 20);
+      this.recoger = new Resorte(0, 200, 20);       // patas recogidas en vuelo
+      this.pesoAleteo = new Resorte(0, 90, 16);     // mezcla entre ala quieta y aleteo
+      this.sombraOp = new Resorte(1, 120, 18);
+
+      this.vozNivel = 0;
+      this.ojoObj = { x: 0, y: 0 };
+      this.t = 0;
+      this.faseAleteo = 0;
+      this.fasePaso = 0;
+      this.mov = null;           // movimiento en curso
+      this.proxMirada = 1.5;     // próxima mirada al azar
+      this.miradaAzar = 0;
+      this.proxParpadeo = 2;
+      this.parpadeo = 0;
+      this.proxColeteo = 3;
+      this.ultimo = performance.now();
+      requestAnimationFrame((ts) => this.cuadro(ts));
+    }
+
+    // Movimiento: devuelve una promesa que se cumple al llegar
+    mover(x, y, modo) {
+      const r = this.r;
+      return new Promise((listo) => {
+        const dx = x - r.x, dy = y - r.y, dist = Math.hypot(dx, dy);
+        if (MOVIMIENTO_REDUCIDO || dist < 3) { r.colocar(x, y); return listo(); }
+        const vuelo = modo === "vuelo";
+        const dur = vuelo ? limitar(0.55 + dist / 900, 0.6, 1.6) : limitar(dist / 110, 0.6, 4.5);
+        const alto = vuelo ? limitar(40 + dist * 0.18, 40, 140) : 0;
+        // punto de control de la curva: por encima de la recta
+        const cp = { x: r.x + dx / 2, y: Math.min(r.y, y) - alto };
+        this.mov = { vuelo, x0: r.x, y0: r.y, x1: x, y1: y, cp, dur, t: vuelo ? -0.16 : 0, listo, dist };
+        if (vuelo) { this.squash.obj = 0.82; } // anticipación: se agacha antes de saltar
+      });
+    }
+
+    cuadro(ts) {
+      const dt = Math.min(0.05, (ts - this.ultimo) / 1000);
+      this.ultimo = ts;
+      this.t += dt;
+      this.actualizar(dt);
+      requestAnimationFrame((t2) => this.cuadro(t2));
+    }
+
+    actualizar(dt) {
+      const r = this.r, e = r.estados, T = this.t;
+      let volando = false, caminando = false, vx = 0;
+
+      // ---- desplazamiento ----
+      const m = this.mov;
+      if (m) {
+        m.t += dt / m.dur;
+        if (m.vuelo && m.t < 0) {
+          // fase de anticipación (agachado)
+        } else {
+          if (m.vuelo && !m.despego) { m.despego = true; this.squash.obj = 1; this.squash.empujar(6); this.cola.empujar(-120); }
+          const p = limitar(m.t, 0, 1);
+          const k = m.vuelo ? suave(p) : p;
+          let nx, ny;
+          if (m.vuelo) {
+            const u = 1 - k;
+            nx = u * u * m.x0 + 2 * u * k * m.cp.x + k * k * m.x1;
+            ny = u * u * m.y0 + 2 * u * k * m.cp.y + k * k * m.y1;
+            volando = true;
+          } else {
+            nx = lerp(m.x0, m.x1, k); ny = lerp(m.y0, m.y1, k);
+            caminando = true;
+            this.fasePaso += Math.abs(nx - r.x) / 14; // el paso depende de la distancia: los pies no patinan
+          }
+          vx = (nx - r.x) / Math.max(dt, 0.001);
+          r.colocar(nx, ny);
+          if (m.t >= 1) {
+            this.mov = null;
+            if (m.vuelo) { this.squash.empujar(-7); this.cola.empujar(160); this.cabeza.empujar(-60); } // aterrizaje con rebote
+            m.listo();
+          }
+        }
+      }
+
+      // ---- giro (mirar a un lado) ----
+      this.mirada.obj = r.lado === "izq" ? -1 : 1;
+      const mir = this.mirada.paso(dt);
+      const escX = Math.abs(mir) < 0.08 ? 0.08 * Math.sign(mir || 1) : mir;
+
+      // ---- vuelo: inclinación y aleteo ----
+      this.inclinacion.obj = volando ? limitar(vx / 55, -16, 16) * (r.lado === "izq" ? -1 : 1) : 0;
+      const inc = this.inclinacion.paso(dt);
+      this.recoger.obj = volando ? 1 : 0;
+      const rec = this.recoger.paso(dt);
+      const planeo = volando && m && m.dist > 320 && m.t > 0.35 && m.t < 0.72;
+      this.pesoAleteo.obj = volando && !planeo ? 1 : 0;
+      const pa = this.pesoAleteo.paso(dt);
+      this.faseAleteo += dt * (volando ? 2 * Math.PI * 7.5 : 0);
+      // bajada rápida, subida lenta (como un ave real)
+      const ciclo = (Math.sin(this.faseAleteo) + 1) / 2;
+      const aleteo = -62 * Math.pow(ciclo, 0.6) + 14;
+
+      // ---- objetivo del ala según el estado ----
+      let alaObj = Math.sin(T * 1.8) * 2; // respiración
+      if (planeo) alaObj = -38;
+      else if (e.has("senalando")) alaObj = -80 + Math.sin(T * 6) * 4;
+      else if (e.has("saludando")) alaObj = -45 + Math.sin(T * 13) * 32;
+      else if (e.has("pensando")) alaObj = -18 + Math.sin(T * 4) * 8;
+      else if (e.has("hablando")) alaObj = Math.sin(T * 3.1) * 6 - this.vozNivel * 10;
+      this.ala.obj = alaObj;
+      const alaQuieta = this.ala.paso(dt);
+      const ala = lerp(alaQuieta, aleteo, pa);
+
+      // ---- cabeza ----
+      this.proxMirada -= dt;
+      if (this.proxMirada <= 0) { this.miradaAzar = (Math.random() - 0.5) * 18; this.proxMirada = 1.2 + Math.random() * 3; }
+      let cab = this.miradaAzar * 0.5 + this.ojoObj.y * 3.5;
+      let cx = 0, cy = 0;
+      if (e.has("pensando")) { cab = -14 + Math.sin(T * 1.5) * 3; }
+      if (e.has("escuchando")) { cab = 12 + Math.sin(T * 2) * 2; }
+      if (e.has("hablando")) { cab += this.vozNivel * 7 + Math.sin(T * 4.3) * 2.5; }
+      if (e.has("senalando")) { cab = 5; }
+      if (e.has("picoteando")) { const pk = Math.max(0, Math.sin(T * 9)); cab = 40 * Math.pow(pk, 3); cx = 4 * pk; cy = 10 * Math.pow(pk, 3); }
+      if (e.has("acicalando")) { cab = -42 + Math.sin(T * 14) * 4; cx = -14; cy = 8; }
+      if (e.has("mirando")) { cab = Math.sin(T * 2.2) * 16; }
+      if (caminando) { cx = Math.sin(this.fasePaso * Math.PI) * 3; }
+      if (volando) { cab = -inc * 0.5 - 4; }
+      this.cabeza.obj = cab; this.cabezaX.obj = cx; this.cabezaY.obj = cy;
+      const cabA = this.cabeza.paso(dt), cabX = this.cabezaX.paso(dt), cabY = this.cabezaY.paso(dt);
+
+      // ---- cola (con inercia) ----
+      this.proxColeteo -= dt;
+      if (this.proxColeteo <= 0 && !volando) { this.cola.empujar(-150); this.proxColeteo = 3 + Math.random() * 5; }
+      this.cola.obj = volando ? -8 : caminando ? Math.sin(this.fasePaso * Math.PI * 2) * 4 : 0;
+      const cola = this.cola.paso(dt);
+
+      // ---- cuerpo: respiración, pasos y aplastar/estirar ----
+      if (!m || !m.vuelo || m.t >= 0) { if (this.squash.obj !== 1 && !(m && m.vuelo && m.t < 0)) this.squash.obj = 1; }
+      const sq = this.squash.paso(dt);
+      let bob = Math.sin(T * 2.1) * 0.8;
+      if (caminando) bob = -Math.abs(Math.sin(this.fasePaso * Math.PI)) * 3.5;
+      if (volando) bob = Math.sin(this.faseAleteo) * 2.2 * pa;
+      if (e.has("hablando")) bob -= this.vozNivel * 1.5;
+
+      // ---- patas ----
+      const paso = caminando ? Math.sin(this.fasePaso * Math.PI) * 20 : 0;
+
+      // ---- pico y ojos ----
+      let voz = this.vozNivel;
+      if (e.has("sin-voz")) voz = (Math.sin(T * 26) + 1) / 2 * 0.8;
+      this.pico.obj = voz * 24;
+      const pico = this.pico.paso(dt);
+      this.pupX.obj = this.ojoObj.x; this.pupY.obj = this.ojoObj.y;
+      if (e.has("pensando")) { this.pupX.obj = 1; this.pupY.obj = -2; }
+      const px = this.pupX.paso(dt), py = this.pupY.paso(dt);
+
+      this.proxParpadeo -= dt;
+      if (this.proxParpadeo <= 0) { this.parpadeo = 0.16; this.proxParpadeo = Math.random() < 0.2 ? 0.25 : 2 + Math.random() * 4; }
+      let lid = 0;
+      if (this.parpadeo > 0) { this.parpadeo -= dt; lid = Math.sin(limitar(1 - this.parpadeo / 0.16, 0, 1) * Math.PI); }
+      if (e.has("escuchando")) lid = Math.min(lid, 0);
+
+      this.sombraOp.obj = volando ? 0.35 : 1;
+      const so = this.sombraOp.paso(dt);
+
+      // ---- aplicar al dibujo ----
+      const E = this.el;
+      E.svg.style.transform = `scaleX(${escX.toFixed(3)})`;
+      E.arco.style.transform = `rotate(${(inc * (r.lado === "izq" ? -1 : 1)).toFixed(2)}deg)`;
+      const sx = 1 + (1 - sq) * 0.7;
+      E.todo.setAttribute("transform", `translate(0 ${bob.toFixed(2)}) translate(60 106) scale(${sx.toFixed(3)} ${sq.toFixed(3)}) translate(-60 -106)`);
+      E.cabeza.setAttribute("transform", `translate(${cabX.toFixed(2)} ${cabY.toFixed(2)}) rotate(${cabA.toFixed(2)} 74 58)`);
+      E.ala.setAttribute("transform", `rotate(${ala.toFixed(2)} 46 62)`);
+      E.cola.setAttribute("transform", `rotate(${cola.toFixed(2)} 36 78)`);
+      const recT = `translate(${(4 * rec).toFixed(2)} ${(-7 * rec).toFixed(2)})`;
+      E.pataA.setAttribute("transform", `${recT} rotate(${(paso + rec * 35).toFixed(2)} 56 90)`);
+      E.pataB.setAttribute("transform", `${recT} rotate(${(-paso + rec * 35).toFixed(2)} 66 90)`);
+      E.picoInf.setAttribute("transform", `rotate(${pico.toFixed(2)} 98 47)`);
+      E.parpado.setAttribute("transform", `translate(0 34.5) scale(1 ${lid.toFixed(3)}) translate(0 -34.5)`);
+      const pupT = `translate(${px.toFixed(2)} ${py.toFixed(2)})`;
+      E.pupila.setAttribute("transform", pupT);
+      E.brillo.setAttribute("transform", pupT);
+      E.ojoBlanco.setAttribute("transform", e.has("escuchando") ? "translate(88 41) scale(1.12) translate(-88 -41)" : "");
+      E.sombra.setAttribute("transform", `translate(60 112) scale(${(0.6 + 0.4 * so).toFixed(3)}) translate(-60 -112)`);
+      E.sombra.style.opacity = (0.14 * so).toFixed(3);
+    }
+  }
+
   // ---------------------------------------------------------------
   //  Rufino
   // ---------------------------------------------------------------
@@ -216,12 +466,17 @@
       this.y = innerHeight - 160;
       this.enCasa = false;
 
+      this.estados = new Set();
+      this.lado = "izq";
       this.crear();
-      this.voz = new Voz((n) => this.root.style.setProperty("--boca", n.toFixed(2)));
+      this.anim = new Animador(this);
+      this.voz = new Voz((n) => (this.anim.vozNivel = n));
+      const sel = $(".r-voz-sel", this.panel);
+      sel.value = HAY_SERVIDOR ? this.voz.vozElegida : "navegador";
+      if (!sel.value) sel.value = "Achird";
       this.prepararMicrofono();
       this.ojosQueSiguen();
-      this.parpadeo();
-      this.colocar(this.x, this.y, 0);
+      this.colocar(this.x, this.y);
 
       App.alIngresar(() => this.entrar());
       App.alCambiarVista((v) => this.alCambiarVista(v));
@@ -249,9 +504,15 @@
           <div class="r-cab-avatar">${SVG}</div>
           <div class="r-cab-texto"><strong>Rufino</strong><span class="r-estado">Asistente virtual de ViCa</span></div>
           <button class="r-icono r-btn-guia" type="button" title="Consejos al cambiar de pantalla" aria-pressed="true">💡</button>
+          <button class="r-icono r-btn-ajustes" type="button" title="Elegir la voz de Rufino" aria-expanded="false">⚙️</button>
           <button class="r-icono r-btn-voz" type="button" title="Silenciar la voz" aria-pressed="true">🔊</button>
           <button class="r-icono r-btn-cerrar" type="button" title="Cerrar">✕</button>
         </header>
+        <div class="r-ajustes" hidden>
+          <label for="r-voz-sel">Voz de Rufino</label>
+          <select id="r-voz-sel" class="r-voz-sel">${VOCES.filter((v) => HAY_SERVIDOR || v.id === "navegador").map((v) => `<option value="${v.id}">${v.nombre}</option>`).join("")}</select>
+          <small>${HAY_SERVIDOR ? "Al elegir una, Rufino te habla para que la escuches." : "Las voces de Gemini se activan con la app publicada en Vercel."}</small>
+        </div>
         <div class="r-mensajes" aria-live="polite"></div>
         <div class="r-sugerencias"></div>
         <form class="r-form">
@@ -276,6 +537,15 @@
         e.currentTarget.title = this.vozActiva ? "Silenciar la voz" : "Activar la voz";
         if (!this.vozActiva) this.voz.detener();
       });
+      $(".r-btn-ajustes", panel).addEventListener("click", (e) => {
+        const aj = $(".r-ajustes", panel);
+        aj.hidden = !aj.hidden;
+        e.currentTarget.setAttribute("aria-expanded", String(!aj.hidden));
+      });
+      $(".r-voz-sel", panel).addEventListener("change", (e) => {
+        this.voz.cambiarVoz(e.target.value);
+        this.decir("Hola, soy Rufino. ¿Te gusta cómo sueno con esta voz?");
+      });
       $(".r-btn-guia", panel).addEventListener("click", (e) => {
         this.guia = !this.guia;
         e.currentTarget.setAttribute("aria-pressed", String(this.guia));
@@ -294,9 +564,8 @@
     get tam() { return innerWidth < 640 ? 84 : 112; }
     casa() { return { x: innerWidth - this.tam - (innerWidth < 640 ? 8 : 18), y: innerHeight - this.tam - (innerWidth < 640 ? 6 : 12) }; }
 
-    colocar(x, y, dur) {
-      this.root.style.setProperty("--dur", dur + "ms");
-      this.root.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+    colocar(x, y) {
+      this.root.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
       this.x = x; this.y = y;
       this.ajustarBurbuja();
     }
@@ -317,29 +586,25 @@
     }
 
     async moverA(x, y, modo = "vuelo") {
-      const dist = Math.hypot(x - this.x, y - this.y);
-      if (dist < 4) return;
+      if (Math.hypot(x - this.x, y - this.y) < 3) return;
       this.mirar(x < this.x ? "izq" : "der");
-      if (MOVIMIENTO_REDUCIDO) { this.colocar(x, y, 0); return; }
-      const dur = modo === "vuelo" ? Math.min(1500, 500 + dist * 0.9) : Math.min(4000, dist * 9);
       this.estado(modo === "vuelo" ? "volando" : "caminando", true);
-      this.root.style.setProperty("--arco", modo === "vuelo" ? `-${Math.min(90, 30 + dist * 0.12)}px` : "0px");
-      this.colocar(x, y, dur);
-      await esperar(dur);
+      await this.anim.mover(x, y, modo);
       this.estado("volando", false);
       this.estado("caminando", false);
       this.ajustarBurbuja();
-      this.estado("aterriza", true);
-      setTimeout(() => this.estado("aterriza", false), 380);
     }
 
-    mirar(lado) { this.root.classList.toggle("mira-izq", lado === "izq"); }
-    estado(nombre, on) { this.root.classList.toggle(nombre, on); }
+    mirar(lado) { this.lado = lado; }
+    estado(nombre, on) {
+      if (on) this.estados.add(nombre); else this.estados.delete(nombre);
+      this.root.classList.toggle(nombre, on); // para el CSS del globo y del micrófono
+    }
 
     async volverACasa(inmediato) {
       const c = this.casa();
       this.enCasa = true;
-      if (inmediato) return this.colocar(c.x, c.y, 0);
+      if (inmediato) return this.colocar(c.x, c.y);
       await this.moverA(c.x, c.y, "vuelo");
       this.mirar("izq");
     }
@@ -366,7 +631,7 @@
     async entrar() {
       this.ocupado = true;
       // Arranca fuera de pantalla, vuela al centro de la portada y saluda
-      this.colocar(innerWidth + 120, Math.max(90, innerHeight * 0.25), 0);
+      this.colocar(innerWidth + 120, Math.max(90, innerHeight * 0.25));
       await esperar(250);
       const centroX = Math.min(innerWidth - this.tam - 20, innerWidth * (innerWidth < 640 ? 0.5 : 0.62));
       await this.moverA(centroX, Math.max(90, innerHeight * 0.32), "vuelo");
@@ -566,15 +831,6 @@
       setTimeout(() => this.vagar(), 30000 + Math.random() * 30000);
     }
 
-    parpadeo() {
-      const p = () => {
-        this.estado("parpadea", true);
-        setTimeout(() => this.estado("parpadea", false), 150);
-        setTimeout(p, 2200 + Math.random() * 3800);
-      };
-      setTimeout(p, 1500);
-    }
-
     ojosQueSiguen() {
       let pend = false, px = 0, py = 0;
       addEventListener("pointermove", (e) => {
@@ -583,13 +839,12 @@
         pend = true;
         requestAnimationFrame(() => {
           pend = false;
-          const izq = this.root.classList.contains("mira-izq");
+          const izq = this.lado === "izq";
           const ox = this.x + this.tam * (izq ? 0.27 : 0.73), oy = this.y + this.tam * 0.34;
           let dx = (px - ox) / 200, dy = (py - oy) / 200;
           if (izq) dx = -dx;
           const m = Math.hypot(dx, dy) || 1, k = Math.min(1, m);
-          this.root.style.setProperty("--ojo-x", ((dx / m) * k * 1.8).toFixed(2) + "px");
-          this.root.style.setProperty("--ojo-y", ((dy / m) * k * 1.6).toFixed(2) + "px");
+          this.anim.ojoObj = { x: (dx / m) * k * 1.8, y: (dy / m) * k * 1.6 };
         });
       }, { passive: true });
     }
