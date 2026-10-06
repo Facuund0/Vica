@@ -110,6 +110,13 @@ export default async function handler(req, res) {
   // Diagnóstico: abrí /api/chat en el navegador para ver si Gemini responde
   if (req.method === "GET") {
     if (!key) return res.status(200).json({ estado: "ERROR", problema: "Falta la variable GEMINI_API_KEY en Vercel (o se agregó y falta hacer Redeploy)." });
+    // /api/chat?pregunta=... prueba una respuesta completa de Rufino
+    const pregunta = String(req.query?.pregunta || "").slice(0, 300);
+    if (pregunta) {
+      const t0 = Date.now();
+      const r = await responder(key, [{ role: "user", parts: [{ text: `[CONTEXTO ACTUAL DE LA APP: {"vistaActual":"inicio"}]\n${pregunta}` }] }]);
+      return res.status(200).json(r.ok ? { estado: "OK", modelo: r.modelo, ms: Date.now() - t0, ...r.s } : { estado: "ERROR", errores: r.errores });
+    }
     const pruebas = await Promise.all(
       MODELOS.map(async (modelo) => {
         const t0 = Date.now();

@@ -4,7 +4,7 @@
 //  disponible), la app usa automáticamente la voz del navegador.
 //  Opcional: GEMINI_TTS_MODEL y GEMINI_VOZ (por defecto "Achird", amigable)
 // =============================================================
-const MODELOS = [process.env.GEMINI_TTS_MODEL, "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"].filter(Boolean);
+const MODELOS = [process.env.GEMINI_TTS_MODEL, "gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts"].filter(Boolean);
 const VOZ = process.env.GEMINI_VOZ || "Achird";
 
 export default async function handler(req, res) {
