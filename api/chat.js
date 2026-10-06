@@ -110,6 +110,32 @@ export default async function handler(req, res) {
   // Diagnóstico: abrí /api/chat en el navegador para ver si Gemini responde
   if (req.method === "GET") {
     if (!key) return res.status(200).json({ estado: "ERROR", problema: "Falta la variable GEMINI_API_KEY en Vercel (o se agregó y falta hacer Redeploy)." });
+    // /api/chat?bench=1 mide la velocidad de distintas configuraciones
+    if (req.query?.bench) {
+      const contents = [{ role: "user", parts: [{ text: '[CONTEXTO ACTUAL DE LA APP: {"vistaActual":"inicio"}]\n¿Cuándo vence mi cuota?' }] }];
+      const variantes = [
+        ["3.5 esquema", "gemini-3.5-flash", { responseSchema: ESQUEMA }],
+        ["3.5 esquema + minimal", "gemini-3.5-flash", { responseSchema: ESQUEMA, thinkingConfig: { thinkingLevel: "minimal" } }],
+        ["3.5 esquema + low", "gemini-3.5-flash", { responseSchema: ESQUEMA, thinkingConfig: { thinkingLevel: "low" } }],
+        ["3.5 esquema + budget0", "gemini-3.5-flash", { responseSchema: ESQUEMA, thinkingConfig: { thinkingBudget: 0 } }],
+        ["lite esquema", "gemini-3.5-flash-lite", { responseSchema: ESQUEMA }],
+        ["lite esquema + minimal", "gemini-3.5-flash-lite", { responseSchema: ESQUEMA, thinkingConfig: { thinkingLevel: "minimal" } }],
+      ];
+      const out = await Promise.all(variantes.map(async ([nombre, modelo, extra]) => {
+        const t0 = Date.now();
+        try {
+          const r = await fetchConLimite(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
+            method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+            body: JSON.stringify({ systemInstruction: { parts: [{ text: INSTRUCCIONES }] }, contents, generationConfig: { temperature: 0.5, maxOutputTokens: 2048, responseMimeType: "application/json", ...extra } }),
+          }, 15000);
+          const ms = Date.now() - t0;
+          if (!r.ok) return { nombre, ms, status: r.status, error: (await r.text()).slice(0, 160) };
+          const d = await r.json();
+          return { nombre, ms, ok: true, respuesta: (d?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "").slice(0, 120), tokensPensando: d?.usageMetadata?.thoughtsTokenCount || 0 };
+        } catch (e) { return { nombre, ms: Date.now() - t0, error: String(e).slice(0, 100) }; }
+      }));
+      return res.status(200).json(out);
+    }
     // /api/chat?pregunta=... prueba una respuesta completa de Rufino
     const pregunta = String(req.query?.pregunta || "").slice(0, 300);
     if (pregunta) {
