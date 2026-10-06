@@ -62,11 +62,11 @@ async function llamarGemini(modelo, key, contents, conEsquema) {
   };
   if (conEsquema) generationConfig.responseSchema = ESQUEMA;
   if (/2\.5/.test(modelo)) generationConfig.thinkingConfig = { thinkingBudget: 0 }; // respuestas rápidas
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
+  const r = await fetchConLimite(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify({ systemInstruction: { parts: [{ text: INSTRUCCIONES }] }, contents, generationConfig }),
-  });
+  }, 9000);
   if (!r.ok) {
     const detalle = (await r.text()).replace(key, "***").slice(0, 400);
     return { ok: false, status: r.status, detalle };
@@ -83,8 +83,10 @@ async function llamarGemini(modelo, key, contents, conEsquema) {
 // Prueba los modelos en orden; si uno falla, pasa al siguiente
 async function responder(key, contents) {
   const errores = [];
+  const inicio = Date.now();
   for (const modelo of MODELOS) {
     for (const conEsquema of [true, false]) {
+      if (Date.now() - inicio > 20000) return { ok: false, errores: [...errores, { status: 504, detalle: "Se agotó el tiempo probando modelos" }] };
       try {
         const r = await llamarGemini(modelo, key, contents, conEsquema);
         if (r.ok) return { ok: true, modelo, s: r.s };
@@ -108,12 +110,25 @@ export default async function handler(req, res) {
   // Diagnóstico: abrí /api/chat en el navegador para ver si Gemini responde
   if (req.method === "GET") {
     if (!key) return res.status(200).json({ estado: "ERROR", problema: "Falta la variable GEMINI_API_KEY en Vercel (o se agregó y falta hacer Redeploy)." });
-    const r = await responder(key, [{ role: "user", parts: [{ text: "¿Cuánto es 2 + 2?" }] }]);
-    return res.status(200).json(
-      r.ok
-        ? { estado: "OK", modelo: r.modelo, prueba: "¿Cuánto es 2 + 2?", respuesta: r.s.respuesta }
-        : { estado: "ERROR", problema: "Gemini rechazó todos los intentos", errores: r.errores }
+    const pruebas = await Promise.all(
+      MODELOS.map(async (modelo) => {
+        const t0 = Date.now();
+        try {
+          const r = await fetchConLimite(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+            body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Respondé solo el número: ¿cuánto es 2 + 2?" }] }], generationConfig: { maxOutputTokens: 1024 } }),
+          }, 8000);
+          const ms = Date.now() - t0;
+          if (!r.ok) return { modelo, ok: false, status: r.status, ms, detalle: (await r.text()).replace(key, "***").slice(0, 300) };
+          const d = await r.json();
+          return { modelo, ok: true, ms, respuesta: d?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim() };
+        } catch (e) {
+          return { modelo, ok: false, status: 0, ms: Date.now() - t0, detalle: e.name === "AbortError" ? "Tardó más de 8 segundos" : String(e).slice(0, 200) };
+        }
+      })
     );
+    return res.status(200).json({ estado: pruebas.some((p) => p.ok) ? "OK" : "ERROR", pruebas });
   }
   if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
   if (!key) return res.status(503).json({ error: "Falta GEMINI_API_KEY en el servidor" });
@@ -146,6 +161,12 @@ export default async function handler(req, res) {
     sugerencias: Array.isArray(s.sugerencias) ? s.sugerencias.slice(0, 3).map((x) => String(x).slice(0, 60)) : [],
     modelo: r.modelo,
   });
+}
+
+async function fetchConLimite(url, opciones, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { ...opciones, signal: ctrl.signal }); } finally { clearTimeout(t); }
 }
 
 function parse(s) {

@@ -467,7 +467,7 @@
 
     async preguntarGemini(texto, contexto) {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 15000);
+      const t = setTimeout(() => ctrl.abort(), 25000);
       try {
         const res = await fetch(API_CHAT, {
           method: "POST",
