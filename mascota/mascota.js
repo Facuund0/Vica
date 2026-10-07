@@ -98,6 +98,7 @@
       this.natural = HAY_SERVIDOR && this.vozElegida !== "navegador";
       this.fallos = 0;
       this.cache = new Map();
+      this.avisarSinVoz = null;
       this.token = 0;
       this.elegirVoz();
       if ("speechSynthesis" in window) speechSynthesis.addEventListener?.("voiceschanged", () => this.elegirVoz());
@@ -133,24 +134,21 @@
 
     // Parte el texto en trozos: el primero, corto, se genera rápido y empieza a sonar
     // mientras se generan los demás en paralelo.
+    // Máximo 2 pedidos por frase: la primera oración (corta, suena rápido) y el resto.
+    // Así se ahorra cuota del plan gratis de Gemini.
     trozos(texto) {
       const frases = texto.match(/[^.!?¿¡]+[.!?]*/g)?.map((f) => f.trim()).filter(Boolean) || [texto];
-      const out = [];
-      for (const f of frases) {
-        const ult = out[out.length - 1];
-        if (out.length > 1 && ult.length < 90) out[out.length - 1] = ult + " " + f;
-        else out.push(f);
-      }
-      return out;
+      if (frases.length < 2 || texto.length < 110) return [texto];
+      return [frases[0], frases.slice(1).join(" ")];
     }
 
-    audioDe(trozo) {
+    audioDe(trozo, reintento = false) {
       const clave = this.vozElegida + "|" + trozo;
-      let a = this.cache.get(clave);
+      let a = reintento ? null : this.cache.get(clave);
       if (!a) {
         a = new Audio();
         a.preload = "auto";
-        a.src = `${API_VOZ}?voz=${encodeURIComponent(this.vozElegida)}&texto=${encodeURIComponent(trozo)}`;
+        a.src = `${API_VOZ}?voz=${encodeURIComponent(this.vozElegida)}&texto=${encodeURIComponent(trozo)}${reintento ? "&r=" + Date.now() : ""}`;
         a.load(); // empieza a descargar ya
         this.cache.set(clave, a);
         a.addEventListener("error", () => this.cache.delete(clave), { once: true });
@@ -172,32 +170,40 @@
       const mi = this.token;
       const limpio = paraVoz(texto);
       if (!limpio) return;
-      let resto = limpio;
-      if (this.natural) {
-        resto = await this.hablarNatural(limpio, mi);
-        if (!resto || mi !== this.token) return;
+      if (this.vozElegida === "navegador" || !HAY_SERVIDOR) {
+        await this.hablarNavegador(limpio, mi);
+      } else if (this.natural) {
+        const ok = await this.hablarNatural(limpio, mi);
+        if (!ok && mi === this.token) this.avisarSinVoz?.();
       }
-      if (mi === this.token) await this.hablarNavegador(resto, mi);
-      this.empezo(); // por si no llegó a sonar nada
+      this.empezo(); // si no sonó nada, igual muestra el texto
     }
 
-    // Devuelve "" si dijo todo, o el texto que faltó decir si algo falló
+    // Usa SIEMPRE la voz de Gemini elegida: si falla, reintenta una vez y, si
+    // sigue fallando, Rufino responde solo con texto (no cambia a otra voz).
     async hablarNatural(texto, mi) {
       const partes = this.trozos(texto);
-      const audios = partes.map((t) => this.audioDe(t)); // todos se descargan en paralelo
+      const audios = partes.map((t) => this.audioDe(t)); // se descargan en paralelo
       for (let i = 0; i < audios.length; i++) {
-        if (mi !== this.token) return "";
+        if (mi !== this.token) return true;
         try {
           await this.reproducir(audios[i], mi);
           this.fallos = 0;
         } catch (e) {
-          console.info("[Rufino] Voz natural no disponible esta vez, sigo con la del navegador:", e.message);
-          this.cache.delete(this.vozElegida + "|" + partes[i]);
-          if (++this.fallos >= 2) this.natural = false;
-          return partes.slice(i).join(" ");
+          if (mi !== this.token) return true;
+          console.info("[Rufino] La voz falló, reintento:", e.message);
+          await esperar(1200);
+          try {
+            await this.reproducir(this.audioDe(partes[i], true), mi);
+            this.fallos = 0;
+          } catch {
+            this.cache.delete(this.vozElegida + "|" + partes[i]);
+            this.fallos++;
+            return false;
+          }
         }
       }
-      return "";
+      return true;
     }
 
     reproducir(a, mi) {
@@ -550,6 +556,11 @@
       this.crear();
       this.anim = new Animador(this);
       this.voz = new Voz((n) => (this.anim.vozNivel = n));
+      this.voz.avisarSinVoz = () => {
+        if (this.avisoVozDado) return;
+        this.avisoVozDado = true;
+        this.agregarMensaje("aviso", "La voz de Gemini no está disponible en este momento (el plan gratis tiene un límite por minuto). Sigo respondiendo con texto; en un ratito vuelve. Si preferís, en ⚙️ podés elegir la voz del navegador.");
+      };
       const sel = $(".r-voz-sel", this.panel);
       sel.value = HAY_SERVIDOR ? this.voz.vozElegida : "navegador";
       if (!sel.value) sel.value = "Achird";
