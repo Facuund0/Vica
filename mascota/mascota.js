@@ -133,16 +133,9 @@
 
     // Parte el texto en trozos: el primero, corto, se genera rápido y empieza a sonar
     // mientras se generan los demás en paralelo.
-    trozos(texto) {
-      const frases = texto.match(/[^.!?¿¡]+[.!?]*/g)?.map((f) => f.trim()).filter(Boolean) || [texto];
-      const out = [];
-      for (const f of frases) {
-        const ult = out[out.length - 1];
-        if (out.length > 1 && ult.length < 90) out[out.length - 1] = ult + " " + f;
-        else out.push(f);
-      }
-      return out;
-    }
+    // Un solo pedido de audio por mensaje: el plan gratis de Gemini permite
+    // pocos pedidos por minuto, así que no conviene partir el texto.
+    trozos(texto) { return [texto]; }
 
     audioDe(trozo) {
       const clave = this.vozElegida + "|" + trozo;
@@ -193,7 +186,7 @@
         } catch (e) {
           console.info("[Rufino] Voz natural no disponible esta vez, sigo con la del navegador:", e.message);
           this.cache.delete(this.vozElegida + "|" + partes[i]);
-          if (++this.fallos >= 2) this.natural = false;
+          this.fallos++; // solo este mensaje usa la voz del navegador; el próximo vuelve a probar Gemini
           return partes.slice(i).join(" ");
         }
       }
@@ -886,7 +879,6 @@
       if (!this.guia || !consejo || this.vistosConsejos.has(vista) || this.ocupado || !this.panel.hidden || document.getElementById("splash")) return;
       this.vistosConsejos.add(vista);
       this.ocupado = true;
-      if (this.vozActiva) this.voz.precargar(consejo);
       await esperar(700);
       const h1 = $("#contenido h1");
       if (h1 && innerWidth >= 640) {
