@@ -83,10 +83,10 @@ async function llamarGemini(modelo, key, contents, conEsquema) {
   return { ok: true, s };
 }
 
-// Estrategia rápida: pregunta al modelo principal; si en 2,5 s no contestó,
-// lanza en paralelo el modelo "lite" y usa la primera respuesta que llegue.
-const PRINCIPAL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
-const RAPIDO = "gemini-3.5-flash-lite";
+// Estrategia rápida: pregunta al modelo "lite" (el más veloz, ~1,4 s); si en 2,2 s
+// no contestó, lanza en paralelo el modelo Flash y usa la primera respuesta que llegue.
+const PRINCIPAL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+const RAPIDO = PRINCIPAL === "gemini-3.5-flash" ? "gemini-3.5-flash-lite" : "gemini-3.5-flash";
 const RESPALDO = ["gemini-3.8-flash", "gemini-flash-latest"];
 
 async function intentar(modelo, key, contents, errores) {
@@ -111,7 +111,7 @@ async function responder(key, contents) {
   const rapido = new Promise((ok, mal) => {
     let lanzado = false;
     const lanzar = () => { if (!lanzado) { lanzado = true; intentar(RAPIDO, key, contents, errores).then(ok, mal); } };
-    const t = setTimeout(lanzar, 2500);
+    const t = setTimeout(lanzar, 2200);
     principal.catch(() => { clearTimeout(t); lanzar(); }); // si el principal falla antes, no espera
     principal.then(() => clearTimeout(t), () => {});
   });

@@ -11,10 +11,11 @@ const ESTILO = "Decí el siguiente texto como lo diría una persona real de Sunc
 
 export default async function handler(req, res) {
   const key = process.env.GEMINI_API_KEY;
+  const q = Object.fromEntries(new URL(req.url || "/", "http://local").searchParams);
   // GET /api/voz?texto=...&voz=... → audio (Vercel lo guarda en caché: la 2ª vez es instantáneo)
-  if (req.method === "GET" && req.query?.texto) {
+  if (req.method === "GET" && q.texto) {
     if (!key || process.env.DESACTIVAR_VOZ_NATURAL === "1") return res.status(503).json({ error: "Voz natural no configurada" });
-    return enviarAudio(res, key, String(req.query.texto).slice(0, 700).trim(), req.query.voz);
+    return enviarAudio(res, key, String(q.texto).slice(0, 700).trim(), q.voz);
   }
   // Diagnóstico: abrí /api/voz en el navegador
   if (req.method === "GET") {
@@ -28,7 +29,8 @@ export default async function handler(req, res) {
         return { modelo, ok: r.ok, status: r.status, ms: Date.now() - t0, segundos: seg, detalle: r.ok ? "audio OK" : r.detalle };
       } catch (e) { return { modelo, ok: false, ms: Date.now() - t0, detalle: String(e).slice(0, 200) }; }
     }));
-    return res.status(200).json({ estado: pruebas.some((p) => p.ok) ? "OK" : "ERROR", voz: VOZ, pruebas });
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({ estado: pruebas.some((p) => p.ok) ? "OK" : "ERROR", voz: VOZ, url: req.url, pruebas });
   }
   if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
   if (!key || process.env.DESACTIVAR_VOZ_NATURAL === "1") return res.status(503).json({ error: "Voz natural no configurada" });
