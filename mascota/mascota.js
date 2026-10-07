@@ -14,7 +14,9 @@
   const API_CHAT = "api/chat";
   const API_VOZ = "api/voz";
   const HAY_SERVIDOR = location.protocol.startsWith("http");
-  const MOVIMIENTO_REDUCIDO = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Rufino siempre se anima: muchas PCs con Windows tienen apagados los "efectos de
+  // animación" y eso hacía que se teletransportara en vez de volar.
+  const MOVIMIENTO_REDUCIDO = false;
   const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ---------------------------------------------------------------

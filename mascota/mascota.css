@@ -174,6 +174,4 @@
   .rufino { width: 84px; height: 84px; }
   .r-panel { right: 12px; left: 12px; width: auto; bottom: 100px; height: min(520px, calc(100vh - 180px)); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .rufino, .rufino *, .r-panel { animation: none !important; transition: none !important; }
-}
+
