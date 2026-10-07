@@ -29,6 +29,7 @@
         <g class="r-pata r-pata-b"><path d="M66 90 L67 106 M67 106 l-6 2 M67 106 l5 2.5" /></g>
       </g>
       <path class="r-cola" d="M34 74 C22 78 14 84 8 92 C18 92 28 88 38 82 Z"/>
+      <g class="r-ala-atras"><path class="r-ala-atras-base" d="M46 60 C58 50 74 52 78 62 C72 72 56 76 44 70 C40 66 41 62 46 60 Z"/></g>
       <ellipse class="r-cuerpo" cx="58" cy="72" rx="29" ry="23"/>
       <path class="r-panza" d="M60 90 C74 90 86 82 86 68 C86 62 82 58 78 58 C78 72 70 84 54 90 Z"/>
       <g class="r-ala">
@@ -97,7 +98,6 @@
       this.natural = HAY_SERVIDOR && this.vozElegida !== "navegador";
       this.fallos = 0;
       this.cache = new Map();
-      this.audio = new Audio();
       this.token = 0;
       this.elegirVoz();
       if ("speechSynthesis" in window) speechSynthesis.addEventListener?.("voiceschanged", () => this.elegirVoz());
@@ -125,73 +125,123 @@
 
     detener() {
       this.token++;
-      try { this.audio.pause(); } catch {}
+      try { this.actual?.pause(); } catch {}
       if ("speechSynthesis" in window) speechSynthesis.cancel();
       clearInterval(this.simulador);
       this.alHablar(0);
     }
 
-    async hablar(texto) {
+    // Parte el texto en trozos: el primero, corto, se genera rápido y empieza a sonar
+    // mientras se generan los demás en paralelo.
+    trozos(texto) {
+      const frases = texto.match(/[^.!?¿¡]+[.!?]*/g)?.map((f) => f.trim()).filter(Boolean) || [texto];
+      const out = [];
+      for (const f of frases) {
+        const ult = out[out.length - 1];
+        if (out.length > 1 && ult.length < 90) out[out.length - 1] = ult + " " + f;
+        else out.push(f);
+      }
+      return out;
+    }
+
+    audioDe(trozo) {
+      const clave = this.vozElegida + "|" + trozo;
+      let a = this.cache.get(clave);
+      if (!a) {
+        a = new Audio();
+        a.preload = "auto";
+        a.src = `${API_VOZ}?voz=${encodeURIComponent(this.vozElegida)}&texto=${encodeURIComponent(trozo)}`;
+        a.load(); // empieza a descargar ya
+        this.cache.set(clave, a);
+        a.addEventListener("error", () => this.cache.delete(clave), { once: true });
+      }
+      return a;
+    }
+
+    // Descarga el audio por adelantado (por ejemplo, el saludo durante la bienvenida)
+    precargar(texto) {
+      if (!this.natural) return;
+      this.trozos(paraVoz(texto)).forEach((t) => this.audioDe(t));
+    }
+
+    empezo() { const f = this.alEmpezar; this.alEmpezar = null; f?.(); }
+
+    async hablar(texto, alEmpezar) {
       this.detener();
+      this.alEmpezar = alEmpezar;
       const mi = this.token;
       const limpio = paraVoz(texto);
       if (!limpio) return;
+      let resto = limpio;
       if (this.natural) {
-        const ok = await this.hablarNatural(limpio, mi);
-        if (ok || mi !== this.token) return;
+        resto = await this.hablarNatural(limpio, mi);
+        if (!resto || mi !== this.token) return;
       }
-      if (mi === this.token) await this.hablarNavegador(limpio, mi);
+      if (mi === this.token) await this.hablarNavegador(resto, mi);
+      this.empezo(); // por si no llegó a sonar nada
     }
 
+    // Devuelve "" si dijo todo, o el texto que faltó decir si algo falló
     async hablarNatural(texto, mi) {
-      try {
-        const clave = this.vozElegida + "|" + texto;
-        let url = this.cache.get(clave);
-        if (!url) {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 15000);
-          const r = await fetch(API_VOZ, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ texto, voz: this.vozElegida }), signal: ctrl.signal });
-          clearTimeout(t);
-          if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
-          url = URL.createObjectURL(await r.blob());
-          this.cache.set(clave, url);
+      const partes = this.trozos(texto);
+      const audios = partes.map((t) => this.audioDe(t)); // todos se descargan en paralelo
+      for (let i = 0; i < audios.length; i++) {
+        if (mi !== this.token) return "";
+        try {
+          await this.reproducir(audios[i], mi);
+          this.fallos = 0;
+        } catch (e) {
+          console.info("[Rufino] Voz natural no disponible esta vez, sigo con la del navegador:", e.message);
+          this.cache.delete(this.vozElegida + "|" + partes[i]);
+          if (++this.fallos >= 2) this.natural = false;
+          return partes.slice(i).join(" ");
         }
-        this.fallos = 0;
-        if (mi !== this.token) return true;
-        this.prepararAnalizador();
-        this.audio.src = url;
-        await this.audio.play();
-        this.seguirAudio(mi);
-        await new Promise((ok) => { this.audio.onended = this.audio.onpause = ok; this.audio.onerror = ok; });
-        this.alHablar(0);
-        return true;
-      } catch (e) {
-        console.info("[Rufino] Voz natural no disponible esta vez, uso la del navegador:", e.message);
-        // si el servidor dice que no está configurada, o falla dos veces seguidas, deja de intentar
-        if (e.status === 503 || ++this.fallos >= 2) this.natural = false;
-        return false;
       }
+      return "";
     }
 
-    prepararAnalizador() {
-      if (this.analizador) return;
+    reproducir(a, mi) {
+      return new Promise((ok, mal) => {
+        this.actual = a;
+        this.conectar(a);
+        try { a.currentTime = 0; } catch {}
+        const limite = setTimeout(() => { a.pause(); mal(new Error("tardó demasiado")); }, 15000);
+        const fin = () => { limpiar(); this.alHablar(0); ok(); };
+        const error = () => { limpiar(); mal(new Error("no se pudo generar el audio")); };
+        const limpiar = () => { clearTimeout(limite); a.removeEventListener("ended", fin); a.removeEventListener("pause", fin); a.removeEventListener("error", error); };
+        a.addEventListener("ended", fin);
+        a.addEventListener("error", error);
+        if (a.error) return error();
+        a.play().then(() => {
+          clearTimeout(limite);
+          this.empezo();
+          a.addEventListener("pause", fin);
+          this.seguirAudio(a, mi);
+        }, error);
+      });
+    }
+
+    conectar(a) {
+      if (a._conectado) return;
       try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        this.ctx = new Ctx();
-        const fuente = this.ctx.createMediaElementSource(this.audio);
-        this.analizador = this.ctx.createAnalyser();
-        this.analizador.fftSize = 512;
-        fuente.connect(this.analizador);
-        this.analizador.connect(this.ctx.destination);
-        this.buffer = new Uint8Array(this.analizador.fftSize);
-      } catch { this.analizador = null; }
+        if (!this.ctx) {
+          const Ctx = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new Ctx();
+          this.analizador = this.ctx.createAnalyser();
+          this.analizador.fftSize = 512;
+          this.analizador.connect(this.ctx.destination);
+          this.buffer = new Uint8Array(this.analizador.fftSize);
+        }
+        this.ctx.createMediaElementSource(a).connect(this.analizador);
+        a._conectado = true;
+      } catch { /* sin analizador: el pico se mueve con un valor aproximado */ }
+      this.ctx?.resume?.();
     }
 
-    seguirAudio(mi) {
-      this.ctx?.resume?.();
+    seguirAudio(a, mi) {
       const paso = () => {
-        if (mi !== this.token || this.audio.paused) return this.alHablar(0);
-        if (this.analizador) {
+        if (mi !== this.token || a.paused) return this.alHablar(0);
+        if (this.analizador && a._conectado) {
           this.analizador.getByteTimeDomainData(this.buffer);
           let s = 0;
           for (const v of this.buffer) s += (v - 128) ** 2;
@@ -203,7 +253,7 @@
     }
 
     hablarNavegador(texto, mi) {
-      if (!("speechSynthesis" in window)) return Promise.resolve();
+      if (!("speechSynthesis" in window)) { this.empezo(); return Promise.resolve(); }
       // Partir en oraciones da pausas más naturales
       const frases = texto.match(/[^.!?¿¡]+[.!?]*/g)?.map((f) => f.trim()).filter(Boolean) || [texto];
       return new Promise((resolver) => {
@@ -215,6 +265,7 @@
           u.rate = 0.98;
           u.pitch = 0.95;
           u.onstart = () => {
+            this.empezo();
             clearInterval(this.simulador);
             this.simulador = setInterval(() => this.alHablar(0.25 + Math.random() * 0.75), 110);
           };
@@ -253,13 +304,13 @@
       const svg = $(".r-svg", r.root);
       const q = (c) => $(c, svg);
       this.el = {
-        svg, arco: $(".r-arco", r.root), todo: q(".r-cuerpo-todo"), cabeza: q(".r-cabeza"), ala: q(".r-ala"), cola: q(".r-cola"),
+        svg, arco: $(".r-arco", r.root), todo: q(".r-cuerpo-todo"), cabeza: q(".r-cabeza"), ala: q(".r-ala"), alaAtras: q(".r-ala-atras"), cola: q(".r-cola"),
         pataA: q(".r-pata-a"), pataB: q(".r-pata-b"), picoInf: q(".r-pico-inf"), parpado: q(".r-parpado"),
         pupila: q(".r-pupila"), brillo: q(".r-brillo"), sombra: q(".r-sombra"), ojoBlanco: q(".r-ojo-blanco"),
       };
       // resortes de cada parte
       this.mirada = new Resorte(1, 260, 22);        // 1 = mira a la derecha, -1 = izquierda (pasa por 0 al girar)
-      this.cabeza = new Resorte(0, 140, 11);
+      this.cabeza = new Resorte(0, 320, 19);       // rápida: los pájaros mueven la cabeza a saltos
       this.cabezaX = new Resorte(0, 160, 14);
       this.cabezaY = new Resorte(0, 160, 14);
       this.cola = new Resorte(0, 90, 5);            // poco amortiguada: se bambolea
@@ -272,6 +323,8 @@
       this.recoger = new Resorte(0, 200, 20);       // patas recogidas en vuelo
       this.pesoAleteo = new Resorte(0, 90, 16);     // mezcla entre ala quieta y aleteo
       this.sombraOp = new Resorte(1, 120, 18);
+      this.saltoY = 0; this.saltoV = 0; this.preSalto = 0; this.proxSalto = 5 + Math.random() * 5;
+      this.proxGesto = 1;
 
       this.vozNivel = 0;
       this.ojoObj = { x: 0, y: 0 };
@@ -378,8 +431,8 @@
 
       // ---- cabeza ----
       this.proxMirada -= dt;
-      if (this.proxMirada <= 0) { this.miradaAzar = (Math.random() - 0.5) * 18; this.proxMirada = 1.2 + Math.random() * 3; }
-      let cab = this.miradaAzar * 0.5 + this.ojoObj.y * 3.5;
+      if (this.proxMirada <= 0) { this.miradaAzar = (Math.random() - 0.5) * 34; this.proxMirada = 0.6 + Math.random() * 2.2; }
+      let cab = this.miradaAzar * 0.6 + this.ojoObj.y * 5;
       let cx = 0, cy = 0;
       if (e.has("pensando")) { cab = -14 + Math.sin(T * 1.5) * 3; }
       if (e.has("escuchando")) { cab = 12 + Math.sin(T * 2) * 2; }
@@ -388,10 +441,32 @@
       if (e.has("picoteando")) { const pk = Math.max(0, Math.sin(T * 9)); cab = 40 * Math.pow(pk, 3); cx = 4 * pk; cy = 10 * Math.pow(pk, 3); }
       if (e.has("acicalando")) { cab = -42 + Math.sin(T * 14) * 4; cx = -14; cy = 8; }
       if (e.has("mirando")) { cab = Math.sin(T * 2.2) * 16; }
-      if (caminando) { cx = Math.sin(this.fasePaso * Math.PI) * 3; }
+      if (caminando) { const f = (this.fasePaso / 2) % 1; cx = f < 0.35 ? lerp(-3, 6, f / 0.35) : lerp(6, -3, (f - 0.35) / 0.65); cab += 4; } // cabeceo de paloma
       if (volando) { cab = -inc * 0.5 - 4; }
       this.cabeza.obj = cab; this.cabezaX.obj = cx; this.cabezaY.obj = cy;
       const cabA = this.cabeza.paso(dt), cabX = this.cabezaX.paso(dt), cabY = this.cabezaY.paso(dt);
+
+      // ---- gestos con el ala mientras habla ----
+      if (e.has("hablando") && !volando) {
+        this.proxGesto -= dt;
+        if (this.proxGesto <= 0) { this.ala.empujar(-320); this.cabeza.empujar(-70); this.squash.empujar(1.5); this.proxGesto = 1.1 + Math.random() * 1.6; }
+      }
+
+      // ---- saltito de vez en cuando cuando está quieto ----
+      const quieto = !m && !r.ocupado && e.size === 0 && r.panel.hidden;
+      if (quieto && this.saltoY === 0 && this.saltoV === 0) {
+        this.proxSalto -= dt;
+        if (this.proxSalto <= 0 && this.preSalto <= 0) { this.preSalto = 0.14; this.squash.obj = 0.84; }
+      }
+      if (this.preSalto > 0) {
+        this.preSalto -= dt;
+        if (this.preSalto <= 0) { this.squash.obj = 1; this.squash.empujar(5); this.saltoV = -230; this.cola.empujar(-140); this.proxSalto = 6 + Math.random() * 8; if (Math.random() < 0.35) r.lado = r.lado === "izq" ? "der" : "izq"; }
+      }
+      if (this.saltoV !== 0 || this.saltoY < 0) {
+        this.saltoV += 1100 * dt;
+        this.saltoY += this.saltoV * dt;
+        if (this.saltoY >= 0) { this.saltoY = 0; this.saltoV = 0; this.squash.empujar(-6); this.cola.empujar(130); if (r.enCasa) r.lado = "izq"; }
+      }
 
       // ---- cola (con inercia) ----
       this.proxColeteo -= dt;
@@ -400,12 +475,14 @@
       const cola = this.cola.paso(dt);
 
       // ---- cuerpo: respiración, pasos y aplastar/estirar ----
-      if (!m || !m.vuelo || m.t >= 0) { if (this.squash.obj !== 1 && !(m && m.vuelo && m.t < 0)) this.squash.obj = 1; }
+      if (this.preSalto <= 0 && !(m && m.vuelo && m.t < 0)) this.squash.obj = 1;
       const sq = this.squash.paso(dt);
       let bob = Math.sin(T * 2.1) * 0.8;
       if (caminando) bob = -Math.abs(Math.sin(this.fasePaso * Math.PI)) * 3.5;
       if (volando) bob = Math.sin(this.faseAleteo) * 2.2 * pa;
-      if (e.has("hablando")) bob -= this.vozNivel * 1.5;
+      if (e.has("hablando")) bob -= this.vozNivel * 3;
+      bob += this.saltoY;
+      const balanceo = volando ? 0 : Math.sin(T * 0.9) * 2.2 + (e.has("hablando") ? Math.sin(T * 2.6) * 1.5 : 0);
 
       // ---- patas ----
       const paso = caminando ? Math.sin(this.fasePaso * Math.PI) * 20 : 0;
@@ -425,7 +502,7 @@
       if (this.parpadeo > 0) { this.parpadeo -= dt; lid = Math.sin(limitar(1 - this.parpadeo / 0.16, 0, 1) * Math.PI); }
       if (e.has("escuchando")) lid = Math.min(lid, 0);
 
-      this.sombraOp.obj = volando ? 0.35 : 1;
+      this.sombraOp.obj = volando ? 0.35 : this.saltoY < -2 ? 0.7 : 1;
       const so = this.sombraOp.paso(dt);
 
       // ---- aplicar al dibujo ----
@@ -433,7 +510,9 @@
       E.svg.style.transform = `scaleX(${escX.toFixed(3)})`;
       E.arco.style.transform = `rotate(${(inc * (r.lado === "izq" ? -1 : 1)).toFixed(2)}deg)`;
       const sx = 1 + (1 - sq) * 0.7;
-      E.todo.setAttribute("transform", `translate(0 ${bob.toFixed(2)}) translate(60 106) scale(${sx.toFixed(3)} ${sq.toFixed(3)}) translate(-60 -106)`);
+      E.todo.setAttribute("transform", `translate(0 ${bob.toFixed(2)}) rotate(${balanceo.toFixed(2)} 60 104) translate(60 106) scale(${sx.toFixed(3)} ${sq.toFixed(3)}) translate(-60 -106)`);
+      const alaAtras = lerp(alaQuieta * 0.3, aleteo * 1.2 - 8, pa) + (planeo ? -34 : 0);
+      E.alaAtras.setAttribute("transform", `rotate(${alaAtras.toFixed(2)} 48 60)`);
       E.cabeza.setAttribute("transform", `translate(${cabX.toFixed(2)} ${cabY.toFixed(2)}) rotate(${cabA.toFixed(2)} 74 58)`);
       E.ala.setAttribute("transform", `rotate(${ala.toFixed(2)} 46 62)`);
       E.cola.setAttribute("transform", `rotate(${cola.toFixed(2)} 36 78)`);
@@ -474,6 +553,7 @@
       const sel = $(".r-voz-sel", this.panel);
       sel.value = HAY_SERVIDOR ? this.voz.vozElegida : "navegador";
       if (!sel.value) sel.value = "Achird";
+      this.voz.precargar(K.mascota.saludo); // mientras la persona ve la bienvenida
       this.prepararMicrofono();
       this.ojosQueSiguen();
       this.colocar(this.x, this.y);
@@ -639,9 +719,8 @@
       this.estado("saludando", true);
       setTimeout(() => this.estado("saludando", false), 1600);
       const saludo = K.mascota.saludo;
-      this.mostrarBurbuja(saludo);
-      this.agregarMensaje("bot", saludo);
-      await this.decir(saludo);
+      const msg = this.agregarMensaje("bot", saludo);
+      await this.decir(saludo, { alEmpezar: () => { this.mostrarBurbuja(saludo); msg.textContent = saludo; } });
       await esperar(600);
       await this.volverACasa();
       this.ocupado = false;
@@ -704,9 +783,8 @@
       const sinIA = this.falloIA && !esSugerencia;
       this.falloIA = false;
 
-      escribiendo.remove();
       this.estado("pensando", false);
-      this.agregarMensaje("bot", r.respuesta);
+      const burbujaResp = escribiendo; // se completa cuando Rufino empieza a hablar
       if (sinIA) this.agregarMensaje("aviso", "Respuesta sin IA: no se pudo conectar con Gemini. Abrí /api/chat en el navegador para ver el diagnóstico.");
       this.historial.push({ rol: "user", texto }, { rol: "model", texto: r.respuesta });
       this.historial = this.historial.slice(-10);
@@ -718,10 +796,13 @@
         this.navegoRufino = true;
         if (innerWidth < 640) this.alternarPanel(false);
         vuelo = App.ir(destino, r.elemento).then((el) => this.volarA(r.elemento ? el : $("#contenido h1")));
-        if (innerWidth < 640) this.mostrarBurbuja(r.respuesta);
+        if (innerWidth < 640) this.burbujaPendiente = r.respuesta;
       }
       this.pintarSugerencias(r.sugerencias);
-      await Promise.all([this.decir(r.respuesta), vuelo]);
+      await Promise.all([this.decir(r.respuesta, { alEmpezar: () => {
+        this.escribirDeAPoco(burbujaResp, r.respuesta);
+        if (this.burbujaPendiente) { this.mostrarBurbuja(this.burbujaPendiente); this.burbujaPendiente = null; }
+      } }), vuelo]);
       await esperar(1200);
       this.estado("senalando", false);
       if (!this.enCasa) await this.volverACasa();
@@ -750,18 +831,38 @@
       } finally { clearTimeout(t); }
     }
 
-    async decir(texto) {
+    async decir(texto, { alEmpezar } = {}) {
       this.estado("hablando", true);
       this.setEstadoTexto("hablando…");
-      if (this.vozActiva) await this.voz.hablar(texto);
+      let avisado = false;
+      const avisar = () => { if (!avisado) { avisado = true; alEmpezar?.(); } };
+      const reserva = setTimeout(avisar, 4000); // nunca deja el texto escondido más de 4 s
+      if (this.vozActiva) await this.voz.hablar(texto, avisar);
       else {
-        // sin voz, el pico se mueve solo con la animación CSS
+        avisar();
         this.estado("sin-voz", true);
         await esperar(Math.min(4500, 500 + texto.length * 40));
         this.estado("sin-voz", false);
       }
+      clearTimeout(reserva);
+      avisar();
       this.estado("hablando", false);
       this.setEstadoTexto("Asistente virtual de ViCa");
+    }
+
+    // Escribe el texto de a poco, al ritmo aproximado de la voz
+    escribirDeAPoco(el, texto) {
+      const palabras = texto.split(" ");
+      const ms = Math.min(170, Math.max(60, 9000 / palabras.length)) * (this.vozActiva ? 1 : 0.45);
+      let i = 0;
+      el.classList.remove("r-escribiendo");
+      el.textContent = "";
+      clearInterval(el._tw);
+      el._tw = setInterval(() => {
+        el.textContent = palabras.slice(0, ++i).join(" ");
+        this.mensajes.scrollTop = this.mensajes.scrollHeight;
+        if (i >= palabras.length) clearInterval(el._tw);
+      }, ms);
     }
 
     mostrarBurbuja(texto) {
@@ -785,6 +886,7 @@
       if (!this.guia || !consejo || this.vistosConsejos.has(vista) || this.ocupado || !this.panel.hidden || document.getElementById("splash")) return;
       this.vistosConsejos.add(vista);
       this.ocupado = true;
+      if (this.vozActiva) this.voz.precargar(consejo);
       await esperar(700);
       const h1 = $("#contenido h1");
       if (h1 && innerWidth >= 640) {
@@ -799,8 +901,7 @@
         await this.moverA(x, Math.max(72, y), "vuelo");
         this.mirar("izq");
       }
-      this.mostrarBurbuja(consejo);
-      await this.decir(consejo);
+      await this.decir(consejo, { alEmpezar: () => this.mostrarBurbuja(consejo) });
       await esperar(900);
       this.burbujaAbajo = false;
       await this.volverACasa();

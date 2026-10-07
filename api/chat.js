@@ -7,7 +7,7 @@ import "../js/datos.js"; // define globalThis.VICA
 import "../mascota/conocimiento.js"; // define globalThis.CONOCIMIENTO
 
 const K = globalThis.CONOCIMIENTO;
-const MODELOS = [process.env.GEMINI_MODEL, "gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"].filter(Boolean);
+const MODELOS = [process.env.GEMINI_MODEL, "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"].filter(Boolean); // para el diagnóstico
 const IDS_SECCIONES = K.secciones.map((s) => s.id);
 const IDS_ELEMENTOS = K.elementos.map((e) => e.id);
 
@@ -53,6 +53,7 @@ const ESQUEMA = {
   required: ["respuesta", "destino", "elemento", "sugerencias"],
 };
 
+let opcionesLimite = 9000;
 async function llamarGemini(modelo, key, contents, conEsquema) {
   const generationConfig = {
     temperature: 0.5,
@@ -61,12 +62,14 @@ async function llamarGemini(modelo, key, contents, conEsquema) {
     responseMimeType: "application/json",
   };
   if (conEsquema) generationConfig.responseSchema = ESQUEMA;
-  if (/2\.5/.test(modelo)) generationConfig.thinkingConfig = { thinkingBudget: 0 }; // respuestas rápidas
+  // pensar poco = responder rápido (Rufino no necesita razonar mucho)
+  if (/lite/.test(modelo)) generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
+  else if (/gemini-3/.test(modelo)) generationConfig.thinkingConfig = { thinkingLevel: "low" };
   const r = await fetchConLimite(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify({ systemInstruction: { parts: [{ text: INSTRUCCIONES }] }, contents, generationConfig }),
-  }, 9000);
+  }, opcionesLimite);
   if (!r.ok) {
     const detalle = (await r.text()).replace(key, "***").slice(0, 400);
     return { ok: false, status: r.status, detalle };
@@ -80,28 +83,46 @@ async function llamarGemini(modelo, key, contents, conEsquema) {
   return { ok: true, s };
 }
 
-// Prueba los modelos en orden; si uno falla, pasa al siguiente
-async function responder(key, contents) {
-  const errores = [];
-  const inicio = Date.now();
-  for (const modelo of MODELOS) {
-    for (const conEsquema of [true, false]) {
-      if (Date.now() - inicio > 20000) return { ok: false, errores: [...errores, { status: 504, detalle: "Se agotó el tiempo probando modelos" }] };
-      try {
-        const r = await llamarGemini(modelo, key, contents, conEsquema);
-        if (r.ok) return { ok: true, modelo, s: r.s };
-        errores.push({ modelo, conEsquema, status: r.status, detalle: r.detalle });
-        console.error(`Gemini ${modelo} (esquema ${conEsquema}) → ${r.status}`, r.detalle);
-        if (r.status === 400 && conEsquema) continue; // reintenta sin esquema
-        if ([400, 401, 403].includes(r.status) && /API key|API_KEY|permission/i.test(r.detalle)) return { ok: false, errores }; // key mala: no tiene sentido seguir
-        break; // siguiente modelo
-      } catch (e) {
-        errores.push({ modelo, status: 0, detalle: String(e).slice(0, 200) });
-        break;
-      }
+// Estrategia rápida: pregunta al modelo principal; si en 2,5 s no contestó,
+// lanza en paralelo el modelo "lite" y usa la primera respuesta que llegue.
+const PRINCIPAL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+const RAPIDO = "gemini-3.5-flash-lite";
+const RESPALDO = ["gemini-3.8-flash", "gemini-flash-latest"];
+
+async function intentar(modelo, key, contents, errores) {
+  for (const conEsquema of [true, false]) {
+    try {
+      const r = await llamarGemini(modelo, key, contents, conEsquema);
+      if (r.ok) return { ok: true, modelo, s: r.s };
+      errores.push({ modelo, conEsquema, status: r.status, detalle: r.detalle });
+      console.error(`Gemini ${modelo} (esquema ${conEsquema}) → ${r.status}`, r.detalle);
+      if (!(r.status === 400 && conEsquema)) break;
+    } catch (e) {
+      errores.push({ modelo, status: 0, detalle: e.name === "AbortError" ? "tardó demasiado" : String(e).slice(0, 200) });
+      break;
     }
   }
-  return { ok: false, errores };
+  throw new Error("falló " + modelo);
+}
+
+async function responder(key, contents) {
+  const errores = [];
+  const principal = intentar(PRINCIPAL, key, contents, errores);
+  const rapido = new Promise((ok, mal) => {
+    let lanzado = false;
+    const lanzar = () => { if (!lanzado) { lanzado = true; intentar(RAPIDO, key, contents, errores).then(ok, mal); } };
+    const t = setTimeout(lanzar, 2500);
+    principal.catch(() => { clearTimeout(t); lanzar(); }); // si el principal falla antes, no espera
+    principal.then(() => clearTimeout(t), () => {});
+  });
+  try {
+    return await Promise.any([principal, rapido]);
+  } catch {
+    for (const m of RESPALDO) {
+      try { return await intentar(m, key, contents, errores); } catch {}
+    }
+    return { ok: false, errores };
+  }
 }
 
 export default async function handler(req, res) {

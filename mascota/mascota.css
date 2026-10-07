@@ -43,6 +43,7 @@
 .r-cola { fill: var(--plumaje-osc); }
 .r-panza, .r-garganta { fill: var(--panza); }
 .r-ala-base { fill: var(--plumaje-osc); }
+.r-ala-atras-base { fill: #74401c; }
 .r-ala-pluma { fill: none; stroke: #6f3a17; stroke-width: 1.6; stroke-linecap: round; opacity: .7; }
 .r-ceja { fill: none; stroke: var(--ceja); stroke-width: 3; stroke-linecap: round; }
 .r-mejilla { fill: none; stroke: #e7a07a; stroke-width: 2; stroke-linecap: round; opacity: .55; }
@@ -115,6 +116,7 @@
 .r-cab-avatar .r-sombra { display: none; }
 .r-cab-avatar .r-cuerpo, .r-cab-avatar .r-cabeza-base, .r-cab-avatar .r-parpado { fill: #b86b35; }
 .r-cab-avatar .r-cola, .r-cab-avatar .r-ala-base { fill: #8e4d22; }
+.r-cab-avatar .r-ala-atras { display: none; }
 .r-cab-avatar .r-panza, .r-cab-avatar .r-garganta { fill: #f1dcbc; }
 .r-cab-avatar .r-ceja { fill: none; stroke: #f3e2c6; stroke-width: 3; }
 .r-cab-avatar .r-ojo-blanco, .r-cab-avatar .r-brillo { fill: #fff; }

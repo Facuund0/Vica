@@ -11,6 +11,11 @@ const ESTILO = "Decí el siguiente texto como lo diría una persona real de Sunc
 
 export default async function handler(req, res) {
   const key = process.env.GEMINI_API_KEY;
+  // GET /api/voz?texto=...&voz=... → audio (Vercel lo guarda en caché: la 2ª vez es instantáneo)
+  if (req.method === "GET" && req.query?.texto) {
+    if (!key || process.env.DESACTIVAR_VOZ_NATURAL === "1") return res.status(503).json({ error: "Voz natural no configurada" });
+    return enviarAudio(res, key, String(req.query.texto).slice(0, 700).trim(), req.query.voz);
+  }
   // Diagnóstico: abrí /api/voz en el navegador
   if (req.method === "GET") {
     if (!key) return res.status(200).json({ estado: "ERROR", problema: "Falta GEMINI_API_KEY" });
@@ -32,12 +37,18 @@ export default async function handler(req, res) {
   const texto = String(body?.texto || "").slice(0, 700).trim();
   if (!texto) return res.status(400).json({ error: "Texto vacío" });
 
+  return enviarAudio(res, key, texto, body?.voz);
+}
+
+async function enviarAudio(res, key, texto, vozPedida) {
+  if (!texto) return res.status(400).json({ error: "Texto vacío" });
+  const voz = PERMITIDAS.includes(vozPedida) ? vozPedida : VOZ;
   for (const modelo of MODELOS) {
     try {
-      const r = await pedirAudio(modelo, key, texto, PERMITIDAS.includes(body?.voz) ? body.voz : VOZ);
+      const r = await pedirAudio(modelo, key, texto, voz);
       if (!r.ok) { console.error(`TTS ${modelo} → ${r.status}`, r.detalle); continue; }
       res.setHeader("Content-Type", "audio/wav");
-      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.setHeader("Cache-Control", "public, max-age=604800, s-maxage=31536000, immutable");
       return res.status(200).send(r.audio);
     } catch (e) {
       console.error(modelo, e);
