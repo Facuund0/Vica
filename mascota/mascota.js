@@ -104,6 +104,16 @@
     }
 
     cambiarVoz(id) {
+      if (id.startsWith("nav:")) {
+        // una voz puntual del navegador
+        const nombre = id.slice(4);
+        this.vozNavegador = this.vocesNavegador?.find((v) => v.name === nombre) || this.vozNavegador;
+        guardarPref("rufino-voz-nav", nombre);
+        id = "navegador";
+      } else if (id === "navegador") {
+        guardarPref("rufino-voz-nav", ""); // automática: la mejor que haya
+        this.elegirVoz();
+      }
       this.vozElegida = id;
       guardarPref("rufino-voz", id);
       this.natural = HAY_SERVIDOR && id !== "navegador";
@@ -120,7 +130,10 @@
         (/es-AR/i.test(v.lang) ? 20 : /es-(419|MX|US|UY|CL|CO)/i.test(v.lang) ? 12 : 4) +
         (/tomas|elena|valentina|jorge|dalia|paloma|alonso/i.test(v.name) ? 8 : 0) -
         (/espeak|robot/i.test(v.name) ? 60 : 0);
-      this.vozNavegador = voces.sort((a, b) => puntos(b) - puntos(a))[0] || null;
+      this.vocesNavegador = voces.sort((a, b) => puntos(b) - puntos(a));
+      const preferida = leerPref("rufino-voz-nav", "");
+      this.vozNavegador = this.vocesNavegador.find((v) => v.name === preferida) || this.vocesNavegador[0] || null;
+      this.alCambiarLista?.();
     }
 
     detener() {
@@ -543,9 +556,8 @@
       this.crear();
       this.anim = new Animador(this);
       this.voz = new Voz((n) => (this.anim.vozNivel = n));
-      const sel = $(".r-voz-sel", this.panel);
-      sel.value = HAY_SERVIDOR ? this.voz.vozElegida : "navegador";
-      if (!sel.value) sel.value = "Achird";
+      this.voz.alCambiarLista = () => this.armarSelectorVoces();
+      this.armarSelectorVoces();
       this.voz.precargar(K.mascota.saludo); // mientras la persona ve la bienvenida
       this.prepararMicrofono();
       this.ojosQueSiguen();
@@ -583,8 +595,8 @@
         </header>
         <div class="r-ajustes" hidden>
           <label for="r-voz-sel">Voz de Rufino</label>
-          <select id="r-voz-sel" class="r-voz-sel">${VOCES.filter((v) => HAY_SERVIDOR || v.id === "navegador").map((v) => `<option value="${v.id}">${v.nombre}</option>`).join("")}</select>
-          <small>${HAY_SERVIDOR ? "Al elegir una, Rufino te habla para que la escuches." : "Las voces de Gemini se activan con la app publicada en Vercel."}</small>
+          <select id="r-voz-sel" class="r-voz-sel"></select>
+          <small>${HAY_SERVIDOR ? "Al elegir una, Rufino te habla para que la escuches. Las del navegador cambian según el navegador: en Microsoft Edge hay voces \"Natural\" muy buenas." : "Las voces de Gemini se activan con la app publicada en Vercel."}</small>
         </div>
         <div class="r-mensajes" aria-live="polite"></div>
         <div class="r-sugerencias"></div>
@@ -631,6 +643,22 @@
         if (t) { this.input.value = ""; this.preguntar(t); }
       });
       this.pintarSugerencias();
+    }
+
+    armarSelectorVoces() {
+      const sel = $(".r-voz-sel", this.panel);
+      if (!sel || !this.voz) return;
+      const gemini = HAY_SERVIDOR ? VOCES.filter((v) => v.id !== "navegador") : [];
+      const nav = this.voz.vocesNavegador || [];
+      const limpiar = (n) => n.replace(/^Microsoft\s+/i, "").replace(/\s*Online\s*\(Natural\)/i, " (Natural)").replace(/\s+-\s+.*$/, "");
+      sel.innerHTML =
+        (gemini.length ? `<optgroup label="Voces de Gemini (más naturales)">${gemini.map((v) => `<option value="${v.id}">${v.nombre}</option>`).join("")}</optgroup>` : "") +
+        `<optgroup label="Voces de este navegador"><option value="navegador">Automática (la mejor disponible)</option>${nav
+          .map((v) => `<option value="nav:${v.name.replace(/"/g, "&quot;")}">${limpiar(v.name)} · ${v.lang}${/natural|online|neural/i.test(v.name) ? " ★" : ""}</option>`)
+          .join("")}</optgroup>`;
+      const pref = leerPref("rufino-voz-nav", "");
+      sel.value = this.voz.vozElegida !== "navegador" && HAY_SERVIDOR ? this.voz.vozElegida : pref ? "nav:" + pref : "navegador";
+      if (!sel.value) sel.value = "navegador";
     }
 
     // ---------- Movimiento ----------
